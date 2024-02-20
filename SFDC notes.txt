@@ -1,0 +1,540 @@
+SOQL Parent to child
+=================================
+if Parent to child relation is standard
+List<Parent> Parents=[select PF1, PF2, (select CF1, CF2 from childs) from Parent];
+ex: List<Account> Accounts = [select id, Name, (select id, Name from Contacts) from Account];
+
+if Parent to child relation is custom
+List<Parent> Parents=[select PF1, PF2, (select CF1, CF2 from childs__r) from Parent];
+ex: List<Account> Accounts= [select id, Name, (select id, Name from Leads__r) from Account];
+
+
+SOQL Child to Parent
+=========================================
+if Child to Parent relation is standard
+List<Child> childs=[select CF1, CF2, relation.PF1, relation.PF2 from Child];
+ex: List<contact> contacts=[select id, Name, Account.id, Account.Name from contact];
+
+if Parent to Child relation is custom
+List<Child> childs=[select CF1, CF2, relation__r.PF1, relation__r.PF2 from child];
+ex: List<contact> contacts=[select id, Name, Leads__r.id, Leads__r.name from contact];
+
+Apex offers two ways to perform DML operations: using DML statements or Database class methods.
+by using the Database class method, you can specify whether or not to allow for partial record processing if errors are encountered. 
+You can do by passing an additional second Boolean parameter. 
+If you specify false for this parameter and if a record fails, the remainder of DML operations can still succeed. 
+Also a result object array (or one result object if only one sObject was passed in) is returned containing the status of each operation and any errors encountered. 
+By default, this optional parameter is true, which means that if at least one sObject can’t be processed, all remaining sObjects won’t and an exception will be thrown for the record that causes a failure.
+Ex: Database.insert(List of records to insert, allorNone)
+
+Database.SaveResult[] will store the results for Update and Insert operations. 
+Database.UpsertResult[] will store the results for Upserting the data
+Database.UndeleteResult[] will store the results for Undeleting the data.
+This will be having 3 methods isSuccess(), getId() and gerErrors() 
+
+Example: 
+Database.SaveResult[] srList = Database.insert(accts, false);
+
+// Iterate through each returned result
+for (Database.SaveResult sr : srList) {
+    if (sr.isSuccess()) {
+        // Operation was successful, so get the ID of the record that was processed
+        System.debug('Successfully inserted account. Account ID: ' + sr.getId());
+    }
+    else {
+        // Operation failed, so get all errors                
+        for(Database.Error err : sr.getErrors()) {                  
+            System.debug(err.getStatusCode() + ': ' + err.getMessage());
+            System.debug('Fields that affected this error: ' + err.getFields());
+        }
+    }
+
+
+Order of Execution:
+-------------
+Below is the Salesforce Order of Execution:
+
+System Validation rule (required field, field format) (SV)
+Record Triggered Flows (RTF)
+Before Triggers are executed (BT)
+System validations & Custom Validation rules are checked (CV)
+Duplicate Rules (DR)
+After Triggers are executed (AT)
+Assignment Rules are executed (AR)
+Auto-Response Rules are executed (ARR)
+Workflow Rules are executed (WR)
+system validations run again. Before and after triggers are executed one more time if the workflow rule updates a field (BT & AT)
+Escalation Rules are executed (ER)
+Flow Automations not guarnateed order (processes, flow launched by processes, flow launched by workflow rules)
+Executes Record-Triggered Flows that are configured to run after the record is saved
+Executes entitlement rules.
+If the record contains a roll-up summary field or is part of a cross-object workflow, performs calculations and updates the roll-up summary field in the parent record. 
+If the parent record is updated, and a grandparent record contains a roll-up summary field or is part of a cross-object workflow, performs calculations and updates the roll-up summary field in the grandparent record. Grandparent record goes through save procedure.
+Executes Criteria Based Sharing evaluation.
+Commits all DML operations to the database.
+post-commit logic are executed. Examples of post-commit logic (in no particular order) include:
+Sending email
+Enqueued asynchronous Apex jobs, including queueable jobs and future methods
+Asynchronous paths in record-triggered flows
+
+Below will help you to remember Order of Execution in Salesforce:
+SV -> RTF -> BT -> CV -> DR -> AT -> AR -> ARR -> WR (BT, AT) -> ER -> Flows -> ER -> RSF, COF -> CBS -> PCL
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+Future method
+=========
+1. Used to run Asynchrounous operations(Bulk DML, Webservice calls) / Long running operations
+2. Used to minimize the mixed DML exceptions(setup and non-setup objects should not be in same method)
+3. Any method implements Future method should use annotation @future, static and return type should be void
+4. Future method only allows primitive data types
+5. If we want to call webservices we should define callout=true annotation
+6. Future can't be called within future 
+7. 100 callouts can be done and 50 future methods can be called in txn.
+8. Future method can't be invoked from Batch
+9. Future method won't accept the sobject as parameter (instead you can pass Id/List of Ids/Json string as parameter and get the records)
+10. We can't make callout from Trigger but we can do by encapsulating the callouts in future methods
+
+global class FutureMethodRecordProcessing
+{
+    @future
+    public static void processRecords(List<ID> recordIds)
+    {   
+         // Get those records based on the IDs
+         List<Account> accts = [SELECT Name FROM Account WHERE Id IN :recordIds];
+         // Process records
+    }
+    
+    @future(callout=true)
+    public static void getStockQuotes(String acctName)
+    {   
+         // Perform a callout to an external service
+    }
+}
+
+Quauable
+==========
+1. Any method which implements Quauable interface should implement execute method
+2. Quauable will return the job Id
+3. system.enquejob(object of the job) will return job id
+
+Queueable jobs are similar to future methods in that they’re both queued for execution, but they provide you with these additional benefits.
+
+A. Getting an ID for your job: When you submit your job by invoking the System.enqueueJob method, the method returns the ID of the new job. 
+This ID corresponds to the ID of the AsyncApexJob record. 
+Use this ID to identify and monitor your job, either through the Salesforce UI (Apex Jobs page), or programmatically by querying your record from AsyncApexJob.
+B. Using non-primitive types: Your queueable class can contain member variables of non-primitive data types, such as sObjects or custom Apex types. 
+Those objects can be accessed when the job executes.
+C. Chaining jobs: You can chain one job to another job by starting a second job from a running job. 
+Chaining jobs is useful if your process depends on another process to have run first.
+
+Ex: public class Example implements Queueable {
+    public void execute(QueueableContext qc) {
+        Account a = new Account(Name='Acme',Phone='(415) 555-1212');
+        insert a;        
+    }
+}
+
+	To add this class as a job on the queue, call this method:
+	ID jobID = System.enqueueJob(new Example());
+	
+
+Batchable
+==========
+1. We can call one batch apex from another batch only via finish method/Quauable 
+2. It has 3 methods start, execute, finish
+3. start method used to write query to fetch the records, execute method will break it to number of subjobs usually batch size can be between 1-2000 default size is 200
+4. Execute method will perform the logic that require, Finish method used to send mails.
+5. Future method can't be called from Batch Apex
+6. Inorder to make callout from batch we have to implement the interface Database.AllowsCallouts. but the batch size should be always below 100.
+7. To use batch Apex, Apex class should implements the interface Database.Batchable.
+
+Example:
+
+public class Example implements Database.Batchable<sObject>{
+
+   public Database.QueryLocator start(Database.BatchableContext BC){
+      return Database.getQueryLocator(query);
+   }
+
+   public void execute(Database.BatchableContext BC, List<sObject> scope){
+     for(sobject s : scope){
+     s.put(Field,Value); 
+     }
+     update scope;
+    }
+
+   public void finish(Database.BatchableContext BC){
+   }
+}
+
+Each execution of a batch Apex job is considered a discrete transaction. The Apex governor limits are reset for each transaction. 
+If the first transaction succeeds but the second fails, the database updates made in the first transaction aren’t rolled back.
+
+Schedule Apex
+==================
+1. class should implements schedulable interface and should define execute method
+2. SchedualableContext variable is the parameter in execute method
+3. cronexpression - 'sec   min   hrs   dayinmonth   month   dayinweek   year'
+4. system.schedule(name of the job, cron exp, job object)
+5. crontrigger object will hold schedulable jobs
+6. 100 schedule apex can be called within a txn
+7. schedulable context is a interface will contain method getjobid
+8. system.schedulebatch(batchable, jobname, minutesfromnow) will schedule a batch instantly now.
+
+Ex: 
+global class ScheduledBatchable implements Schedulable {
+   global void execute(SchedulableContext sc) {
+      Batchable b = new Batchable(); 
+      Database.executeBatch(b);
+   }
+}
+
+Triggers
+============================
+Trigger.New : holds List of Records 
+Trigger.NewMap: Holds list of records in Id, Sobject (key & value) format.
+If we want to know the Id of the Queue/Accountteams/Opportunities then we have to write a query on Group object
+If we want to know the members of the queue/Teams we have to write query on GroupMembers object
+
+Before Insert: Trigger.New 
+After Insert: Trigger.New, Trigger.NewMap 
+Before Update: Trigger.OldMap, Trigger.old, Trigger.New, Trigger.NewMap (Id of the record will be same in both Trigger.oldMap & Trigger.NewMap)
+After Update: Trigger.oldMap, Trigger.old, Trigger.New, Trigger.NewMap
+Before Delete: Trigger.oldMap, Trigger.old
+After Delete: Trigger.old, Trigger.oldMap
+After Undelete: Trigger.New, Trigger.NewMap
+
+Trigger context variables: 
+Trigger.New    		Trigger.Old			Trigger.NewMap			Trigger.oldMap		Trigger.isInsert
+Trigger.isUpdate	Trigger.isDelete	Trigger.isUndelete		Trigger.isBefore 	Trigger.isAfter		Trigger.isRunning
+
+syntax: trigger TriggerName on ObjectName (trigger_events) {
+                     code_block
+			}
+Example:  trigger MyAccountTrigger on Account (before insert, before update) {
+    // Your code here
+}          
+
+
+--> Schema programming will results objects, object type, fileds, fileds type, picklist values etc.
+	It is used in building the dynamic pages
+
+Custom Settings
+================================
+1. Two types of custom settings List & Hieracheial 
+2. Custom Settings also like Custom object 
+3. Without writing SOQL query you can fetch the data. Data will be fetched in the form of Map of Key, value pair
+4. Hiearcheial: If you want to display data in different format as per the logged in user it will be used (Ex: Trigger/ValidationRule controlling based on user can be done by custom setting)
+5. Without touching the programming we can controll the data.
+6. Mapping the data between two systems(Ex: oracle-salesforce)
+7. This will store data in the application cache so that it will reduce the number of quiries 
+8. If it is list custom setting better to use Custom Metadata Type instead of custom setting
+
+Custom MetadataType
+======================================
+1. It is like Custom Setting but in this we can write query also
+2. Records are stored in the form of metadata rather than data. 
+3. Along with the data we can deploy in the custom Metadata Type
+4. Qureying the records using custom meta datatype doesnot count to SOQL limits
+
+General points
+=======================
+1. Mixed DML in Testclass can be avoided using system.runAs(user) 
+2. 
+
+Governing Limits
+--------------------
+Total number of SOQL queries issued		100
+Total number of records retrieved by SOQL queries	50,000
+Total number of records retrieved by Database.getQueryLocator	10,000
+Total number of DML statements issued 	150
+Total number of callouts (HTTP requests or web services calls) in a transaction	100
+
+OAuthentication
+========================
+Username-Password Type Authentication
+-------------------------------------
+1. In the service provider org create a connected app (clientid, client secret), new user(username, password) and RestResource 
+2. service consumer will request to Authentication server for Accesstoken with Clientid, client secret, username, password 
+3. Authentication server will provide the Accesstoken
+4. Service consumer then will request for the resource along with Accesstoken to service provider
+5. Sevice provider will revert with the service/resource
+
+code format of authorization
+---------------------------------------
+1. in the service provider org create a connected app (clientid, client secret, RedirectURL) and RestResource
+2. service consumer will request to Authentication server for Requestcode with Clientid, Redirect URL
+3. Authentication server will provide the Requestcode.
+4. service consumer will request to Authentication server for Accesstoken with Clientid, client secret, Redirect URL, Code
+5. Authentication server will provide the Accesstoken
+6. Service consumer then will request for the resource along with Accesstoken to service provider
+7. Sevice provider will revert with the service/resource
+8. Client(service Consumer) registered page URL is called Redirect URL, to this page requested code will be send.
+
+
+Client credentials 
+----------------------------
+will only give client id, client secret and redirect url so that we can get access token
+
+Refresh Token
+-----------------
+Refersh Token will be used to generate the Access Token for one time
+
+
+Rest API Services
+============================================
+1. If we want to define any Rest API service then Apex class must have @RestResource(urlmapping='/url')
+2. Apex class should be global, all methods in the class to be global, static and should be annoted with any of the following
+@HttpGet, @HttpPost, @HttpPut, @HttpDelete, @HttpPatch
+3. RestRequest and RestResponse are part of RestContext
+
+
+SOAP
+==========================
+Simple Object Access Protocal
+it exchanges the data in XML format
+WSDL file plays important role in SOAP API 
+when two different systems want to communicate WSDL(in the form XML) file will be used
+SOAP supports almost all the protocals
+Webservice descriptive Language(WSDL): in this we have following 5 elements
+
+1. Binding : 2 types
+It give style of the binding and protocal used
+RPC(RPC encoded, RPC Literal)-old style
+-----> Body of the method specifies the method name, 
+/Document(Document encoded, Document Literal)-new style
+-----> It will specify the method name, every defintion will be given schema
+Salesforce doesnot support RPC. It supports only Document Literal - Wrapped format
+
+2. Service: 
+In this we have port which contains the name of the class and url of the class where webservice defined
+
+3. Porttype
+it is interface contains list of methods with request message and response message
+
+4. messages
+This will contains the methods for request and response
+
+5. types
+this will specify definiton of elements(schema)
+
+Salesforce support only single Porttype
+
+Enterprise WSDL file will be having only copy of data at the time of generating WSDL, 
+later added changes will not be reflected. It is suitable for version based products
+
+Partner WSDL file will be having schema based approach so that changes reflected to destination folder
+
+
+Javascript
+=====================
+1. To expose a public property/public method we need to use @api decorator
+2. To observe the changes to properties of an object we need to use @track
+3. To read data from Salesforce we use wire service. 
+4. To control when the method invocation occurs (for example, in response to clicking a button), call the method imperatively. 
+When you call a method imperatively, you receive only a single response. 
+Compare this behavior with @wire, which delegates control to the framework and results in a stream of values being provisioned.
+5. In the following scenarios, you must call an Apex method imperatively as opposed to using @wire.
+--> To call a method that isn’t annotated with cacheable=true, which includes any method that inserts, updates or deletes data.
+--> To control when the invocation occurs.
+--> To work with objects that aren’t supported by User Interface API, like Task and Event.
+--> To call a method from an ES6 module that doesn’t extend LightningElement
+6. Import Objects and Fields from @salesforce/schema
+If you import references to objects and fields, Salesforce verifies that the objects and fields exist (which also catches typos), 
+prevents objects and fields from being deleted, and cascades any renamed objects and fields into your component's source code. 
+It also ensures that dependent objects and fields are included in change sets and packages. 
+Importing references to objects and fields ensures that your code works, even when object and field names change.
+
+7. A lifecycle hook is a callback method triggered at a specific phase of a component instance’s lifecycle. 
+A. Constructor 	B. connectedCallback	C.renderedCallback 	D.render	E.DisconnectedCallback	 F.errorcallback
+A. Constructor
+---------------
+-->Called when the component is created. 
+-->This hook flows from parent to child, which means that it fires in the parent first. 
+-->You can’t access child elements because they don’t exist yet. 
+-->Properties aren’t passed yet, either. Properties are assigned to the component after construction and before the connectedCallback() hook.
+
+B. connectedCallback
+--------------------
+-->Called when the element is inserted into a document. 
+-->This hook flows from parent to child. You can’t access child elements because they don’t exist yet.
+Means If you have a parent and child component, connectedCallback() defined in parent component will get fire first.
+-->Use connectedCallback() to interact with a component's environment. For example, use it to:
+		Establish communication with the current document or container and coordinate behavior with the environment.
+		Perform initialization tasks, such as fetch data, set up caches, or listen for events
+		Subscribe and Unsubscribe from a Message Channel.
+-->The connectedCallback() hook can fire more than one time.
+--> In ConnectedCallback() method we can set a property value and also can define the variable.
+-->Use connectedCallback() in Lightning Web Component to understand the state of the “outside” world (a component’s containing environment).
+-->We can call a apex method inside the connectedCallback() in Lightning Web Component.
+-- We can create and dispatch events in  connectedCallback() method of Lightning Web Component.
+It allows you to fire an custom event. Also, you can listen for events (such as publish-subscribe events).
+--> Navigation service will work fine when it is being used inside connectedCallback() method.
+ 
+C. render()
+----------------------
+Call this method to update the UI. It may be called before or after connectedCallback().
+It’s rare to call render() in a component. The main use case is to conditionally render a template. 
+Define business logic to decide which template (HTML file) to use. The method must return a valid HTML template.
+
+D. renderedCallback()
+----------------------------------------
+Called after every render of the component. 
+This lifecycle hook is specific to Lightning Web Components, it isn’t from the HTML custom elements specification. 
+This hook flows from child to parent.
+A component is rerendered when the value of a property changes and that property is used either directly in a component template or indirectly in the getter of a property that is used in a template
+To use this hook to perform a one-time operation, use a boolean field like hasRendered to track whether renderedCallback() has been executed. 
+The first time renderedCallback() executes, perform the one-time operation and set hasRendered = true. If hasRendered = true, don’t perform the operation.
+Don’t update a wire adapter configuration object property in renderedCallback().
+Don’t update a public property or field in renderedCallback(). 
+
+			https://developer.salesforce.com/docs/component-library/documentation/en/lwc/reference_lifecycle_hooks
+
+E. disconnectedCallback()
+--------------------------------------
+Called when the element is removed from a document. This hook flows from parent to child.
+Use disconnectedCallback() to clean up work done in the connectedCallback(), like purging caches or removing event listeners.
+
+F. errorCallback(error,stack)
+------------------------------
+Called when a descendant component throws an error. 
+The error argument is a JavaScript native error object, and the stack argument is a string. 
+This lifecycle hook is specific to Lightning Web Components, it isn’t from the HTML custom elements specification.
+Implement this hook to create an error boundary component that captures errors in all the descendent components in its tree. 
+
+Use the error boundary component’s errorCallback()lifecycle hook to log stack information and render an alternative view to tell users what happened and what to do next. 
+The method works like a JavaScript catch{} block for components that throw errors in their lifecycle hooks or in their event handlers declared in an HTML template.
+It’s important to note that an error boundary component catches errors only from its children, and not from itself.
+
+
+
+============================================================
+Prmoise:
+--------
+Promise lets asynchronous methods return values like synchronous methods:
+instead of immediately returning the final value, the asynchronous method returns a promise to supply the value at some point in the future
+
+A promise can have one of the following states
+pending – initial state, an action waiting to be a fire
+fulfilled – operation completed successfully
+rejected – operation failed
+We can use a few JavaScript methods to chained promises
+
+promise.then()
+promise.catch()
+promise.finally()
+IF promise has state fulfilled THEN then the method is fire. ELSE IF promise has state rejected THEN catch method is fire.
+finally is fire always at the end of the promise. 
+
+There are multiple reasons to use promoises
+It improves error handling, and you don't need to add custom error handling. No matter if the error is in the async operation or .then() method, it will be passed in .catch().
+It improves the readability of the code.
+We can chain multiple async operations.
+We have better control over the flow of the async operations.
+
+We can perform any operation in the Promise in LWC and JavaScript, especially asynchronous operations.
+Then, we need to pass a function to the Promise which has two callback functions, resolve and reject. This function is also known as the executor. 
+The Promise will perform some task and then we need to call either resolve() or reject() based on the outcome of the task.
+If the task is successful, call resolve() and if there is an error, call reject().
+
+Pub-Sub model
+---------------------
+Pub-Sub Model is essentially used to transfer the information between the component which are not in the same DOM hierarchy –
+which means that the components are not connected/ related in any way with each other using the parent-child relationship.
+To establish the communication between two components we use a JavaScript library called pubsub, which acts as a helper js.
+
+1) How the event is fired.
+
+fireEvent(this.pageRef, “eventdetails”, accId);
+
+pageRef is CurrentPageReference.
+eventdetails is the name of your event, which will be same while handling the event.
+accId is the data you want to transfer.
+
+2) How event is handled – Registered.
+
+connectedCallback() {
+// subscribe to eventdetails event
+registerListener(“eventdetails”, this.caseDetails, this);
+}
+this.caseDetails holds the Account Id, which is passed via event. 
+Post that, the JavaScript function is called which will execute when the component receives the event i.e.(fetched Account Id)
+
+3) How the event is Unregistered.
+
+Unregister the event once your work is done. 
+This removes the references of call back from call-backs variable. Call disconnectedCallback to unsubscribe the event.
+disconnectedCallback() {
+// unsubscribe from eventdetails event
+unregisterAllListeners(this);
+}
+
+4) There are two methods for unregistering listeners.
+
+a) unregisterListener – Unregister a single listener (call back) at a time.
+E.g. unregisterListener = (eventdetails, callback, accId);
+eventdetails – Name of the event to unregister from.
+callback – Function to unregister.
+accId – The value to be passed as the parameter to the callback function is bound.
+b) unregisterAllListeners – Unregistering all listeners at once.
+
+Eg. unregisterAllListeners(this);
+
+
+Create and Dispatch Events
+==================================
+Create and dispatch events in a component’s JavaScript class. To create an event, use the CustomEvent() constructor. 
+To dispatch an event, call the EventTarget.dispatchEvent() method.
+The CustomEvent() constructor has one required parameter, which is a string indicating the event type. 
+As a component author, you name the event type when you create the event. You can use any string as your event type. 
+However, we recommend that you conform with the DOM event standard.
+
+No uppercase letters
+No spaces
+Use underscores to separate words
+Don’t prefix your event name with the string on, because inline event handler names must start with the string on. 
+If your event is called onmessage, the markup would be <c-my-component ononmessage={handleMessage}>. Notice the doubled word onon, which is confusing.
+
+Example:
+
+childCmp.js
+---------
+import {LightningElement} from "lwc";
+
+export default class ChildCmp extends LightningElement{
+handleSearch(event){
+this.dispatchEvent(new CustomEvent("getSearchValue",{detail: event.target.value}));
+}
+}
+
+childCmp.html
+------------
+<template>
+<lightning-input label="Enter Search Value" onchange={handleSearch}> </lightning-input>
+</template>
+
+
+parentCmp.html
+-------------
+<template>
+<c-child-cmp ongetSerachValue={searchHandler}/>
+<p> {searchValue}</p>
+</template>
+
+parentCmp.js
+------------------
+import {LightningElement, track} from "lwc";
+
+export default class ParentCmp extends LightningElement{
+@track searchValue;
+SearchHandler(event){
+this.searchValue=event.detail;
+}
+}
+
+
+Communicate Across the DOM with Lightning Message Service
+====================================
+Use Lightning message service to communicate across the DOM within a Lightning page. 
+Communicate between Visualforce pages embedded in the same Lightning page, Aura components, and Lightning web components, including components in a utility bar and pop-out utilities. 
+Choose whether a component subscribes to messages from the entire application, or from only the active area.
